@@ -195,6 +195,7 @@ const Profile = () => {
               {health.dateOfBirth || <span className="text-gray-300">Not set</span>}
             </p>
           )}
+
         </div>
       </div>
 

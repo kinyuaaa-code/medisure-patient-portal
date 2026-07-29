@@ -4,6 +4,8 @@ import {
   createUserWithEmailAndPassword,
   signOut,
   onAuthStateChanged,
+  GoogleAuthProvider,
+  signInWithPopup,
   User,
 } from "firebase/auth";
 import { doc, getDoc, setDoc } from "firebase/firestore";
@@ -24,6 +26,7 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string, role?: string) => Promise<void>;
   logout: () => Promise<void>;
+  loginWithGoogle: (role?: string) => Promise<any>;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -83,7 +86,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       email,
       role,
       createdAt: new Date().toISOString(),
-      //patient-specific fields
       dateOfBirth: "",
       phoneNumber: "",
       bloodType: "",
@@ -97,6 +99,42 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       name,
       email,
       role,
+    };
+    setUser(profile);
+    return profile as any;
+  };
+
+  const loginWithGoogle = async (role: string = "patient") => {
+    const provider = new GoogleAuthProvider();
+    const result = await signInWithPopup(auth, provider);
+
+    // Check if user already exists in Firestore
+    const userDoc = await getDoc(doc(db, "users", result.user.uid));
+
+    if (!userDoc.exists()) {
+      // New user — create their profile
+      await setDoc(doc(db, "users", result.user.uid), {
+        name: result.user.displayName || "User",
+        email: result.user.email || "",
+        role,
+        createdAt: new Date().toISOString(),
+        dateOfBirth: "",
+        phoneNumber: "",
+        bloodType: "",
+        conditions: [],
+        treatmentPlan: "",
+        allergies: "",
+        emergencyContact: "",
+      });
+    }
+
+    const existingRole = userDoc.exists() ? userDoc.data().role : role;
+
+    const profile: UserProfile = {
+      id: result.user.uid,
+      name: result.user.displayName || "User",
+      email: result.user.email || "",
+      role: existingRole,
     };
     setUser(profile);
     return profile as any;
@@ -118,6 +156,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         login,
         register,
         logout,
+        loginWithGoogle,
       }}
     >
       {!loading && children}

@@ -8,6 +8,17 @@ import {
   getDocs,
   addDoc,
 } from "firebase/firestore";
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  Cell,
+} from "recharts";
+import DoseRatingModal from "../components/ui/DoseRatingModal";
 
 interface Medication {
   id: string;
@@ -37,6 +48,9 @@ const Home = () => {
   const [selectedMood, setSelectedMood] = useState<string | null>(null);
   const [sideEffects, setSideEffects] = useState("");
   const [journalSaved, setJournalSaved] = useState(false);
+  const [adherenceHistory, setAdherenceHistory] = useState<any[]>([]);
+  const [showRatingModal, setShowRatingModal] = useState(false);
+  const [pendingMed, setPendingMed] = useState<Medication | null>(null);
 
   const moods = [
     { label: "Great", emoji: "😊" },
@@ -60,6 +74,7 @@ const Home = () => {
   useEffect(() => {
     if (!user) return;
     loadMedications();
+    loadAdherenceHistory();
   }, [user]);
 
   const loadMedications = async () => {
@@ -103,87 +118,89 @@ const Home = () => {
     }
   };
 
+  const loadAdherenceHistory = async () => {
+    if (!user) return;
+    try {
+      const last7Days = Array.from({ length: 7 }, (_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - (6 - i));
+        return {
+          date: d.toISOString().split("T")[0],
+          day: d.toLocaleDateString("en-GB", { weekday: "short" }),
+        };
+      });
+
+      const doseSnap = await getDocs(
+        query(collection(db, "dose_logs"), where("patientId", "==", user.id))
+      );
+      const allDoses = doseSnap.docs.map((d) => d.data());
+
+      const history = last7Days.map(({ date, day }) => {
+        const dayDoses = allDoses.filter((d) => d.loggedAt?.startsWith(date));
+        const taken = dayDoses.filter((d) => d.status === "taken").length;
+        const total = dayDoses.length;
+        return {
+          day,
+          score: total > 0 ? Math.round((taken / total) * 100) : 0,
+          taken,
+          total,
+        };
+      });
+
+      setAdherenceHistory(history);
+    } catch (err) {
+      console.error("Error loading adherence history:", err);
+    }
+  };
+
   const handleLogDose = async (med: Medication) => {
-  if (!user) return;
-  try {
-    await addDoc(collection(db, "dose_logs"), {
-      patientId: user.id,
-      scheduleId: med.scheduleId,
-      status: "taken",
-      loggedAt: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
-    });
+    if (!user) return;
+    try {
+      await addDoc(collection(db, "dose_logs"), {
+        patientId: user.id,
+        scheduleId: med.scheduleId,
+        status: "taken",
+        loggedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+      });
 
-    setMedications((prev) =>
-      prev.map((m) => (m.id === med.id ? { ...m, logged: true } : m))
-    );
-
-    // Recalculate adherence and generate alert if needed
-    await checkAndGenerateAlert(user.id, user.name);
-
-  } catch (err) {
-    console.error("Error logging dose:", err);
-  }
-};
-
-const checkAndGenerateAlert = async (patientId: string, patientName: string) => {
-  try {
-    // Get all dose logs for this patient
-    const doseSnap = await getDocs(
-      query(collection(db, "dose_logs"), where("patientId", "==", patientId))
-    );
-
-    const logs = doseSnap.docs.map((d) => d.data());
-
-    // Filter last 30 days
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const recentLogs = logs.filter(
-      (l) => new Date(l.loggedAt) >= thirtyDaysAgo
-    );
-
-    const total = recentLogs.length;
-    const taken = recentLogs.filter((l) => l.status === "taken").length;
-    const score = total > 0 ? Math.round((taken / total) * 100) : 0;
-
-    // Save adherence score
-    await addDoc(collection(db, "adherence_scores"), {
-      patientId,
-      adherenceScore: score,
-      calculatedAt: new Date().toISOString(),
-    });
-
-    // Generate alert if below threshold
-    if (score < 70) {
-      const severity = score < 40 ? "critical" : "moderate";
-
-      // Check if there's already an unacknowledged alert for this patient
-      const alertSnap = await getDocs(
-        query(
-          collection(db, "risk_alerts"),
-          where("patientId", "==", patientId),
-          where("acknowledged", "==", false)
-        )
+      setMedications((prev) =>
+        prev.map((m) => (m.id === med.id ? { ...m, logged: true } : m))
       );
 
-      // Only create a new alert if none exists
-      if (alertSnap.empty) {
-        await addDoc(collection(db, "risk_alerts"), {
-          patientId,
-          patientName,
-          severity,
-          alertType: score < 40 ? "Critical adherence" : "Low adherence",
-          message: `Patient adherence has dropped to ${score}% over the last 30 days. Immediate follow-up recommended.`,
-          acknowledged: false,
-          createdAt: new Date().toISOString(),
-        });
-        console.log(`Risk alert generated for ${patientName} - ${score}% adherence`);
-      }
+      loadAdherenceHistory();
+
+      // Show rating modal
+      setPendingMed(med);
+      setShowRatingModal(true);
+    } catch (err) {
+      console.error("Error logging dose:", err);
     }
-  } catch (err) {
-    console.error("Error checking adherence:", err);
-  }
-};
+  };
+
+  const handleRatingSubmit = async (rating: number, sideEffect: string) => {
+    if (!user || !pendingMed) return;
+    try {
+      await addDoc(collection(db, "medication_ratings"), {
+        patientId: user.id,
+        scheduleId: pendingMed.scheduleId,
+        drugName: pendingMed.drugName,
+        rating,
+        sideEffect: sideEffect || null,
+        ratedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error("Error saving rating:", err);
+    } finally {
+      setShowRatingModal(false);
+      setPendingMed(null);
+    }
+  };
+
+  const handleRatingSkip = () => {
+    setShowRatingModal(false);
+    setPendingMed(null);
+  };
 
   const handleSaveJournal = async () => {
     if (!selectedMood || !user) return;
@@ -342,6 +359,95 @@ const checkAndGenerateAlert = async (patientId: string, patientName: string) => 
         )}
       </div>
 
+      {/* 7-Day Adherence Chart */}
+      {adherenceHistory.length > 0 && (
+        <div className="mx-4 mt-5 bg-white rounded-2xl p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-sm font-bold text-gray-800 tracking-wide uppercase">
+                7-Day Adherence
+              </h2>
+              <p className="text-xs text-gray-400 mt-0.5">
+                Your dose completion this week
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-xl font-bold text-blue-600">
+                {Math.round(
+                  adherenceHistory.reduce((sum, d) => sum + d.score, 0) /
+                    adherenceHistory.length
+                )}%
+              </p>
+              <p className="text-xs text-gray-400">weekly avg</p>
+            </div>
+          </div>
+
+          <ResponsiveContainer width="100%" height={160}>
+            <BarChart data={adherenceHistory} barSize={28}>
+              <CartesianGrid
+                strokeDasharray="3 3"
+                stroke="#f0f0f0"
+                vertical={false}
+              />
+              <XAxis
+                dataKey="day"
+                tick={{ fontSize: 11, fill: "#9ca3af" }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                domain={[0, 100]}
+                tick={{ fontSize: 11, fill: "#9ca3af" }}
+                axisLine={false}
+                tickLine={false}
+                tickFormatter={(v) => `${v}%`}
+              />
+              <Tooltip
+                contentStyle={{
+                  borderRadius: "12px",
+                  border: "none",
+                  boxShadow: "0 4px 20px rgba(0,0,0,0.1)",
+                  fontSize: "12px",
+                }}
+                formatter={(value: any) => [`${value}%`, "Adherence"]}
+              />
+              <Bar dataKey="score" radius={[6, 6, 0, 0]}>
+                {adherenceHistory.map((entry, index) => (
+                  <Cell
+                    key={index}
+                    fill={
+                      entry.score >= 80
+                        ? "#22c55e"
+                        : entry.score >= 50
+                        ? "#3b82f6"
+                        : entry.score === 0
+                        ? "#e5e7eb"
+                        : "#f59e0b"
+                    }
+                  />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+
+          {/* Legend */}
+          <div className="flex items-center gap-4 mt-3 justify-center flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-sm bg-green-500 block" />
+              <span className="text-xs text-gray-400">Great (80%+)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-sm bg-blue-500 block" />
+              <span className="text-xs text-gray-400">Good (50-79%)</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded-sm bg-yellow-400 block" />
+              <span className="text-xs text-gray-400">Low (&lt;50%)</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Mood Journal */}
       <div className="mx-4 mt-5 bg-white rounded-2xl p-5 shadow-sm">
         <h2 className="text-sm font-bold text-gray-800 tracking-wide uppercase mb-1">
@@ -390,6 +496,15 @@ const checkAndGenerateAlert = async (patientId: string, patientName: string) => 
           {journalSaved ? "✓ Journal Entry Saved!" : "Save Journal Entry"}
         </button>
       </div>
+
+      {/* Dose Rating Modal */}
+      {showRatingModal && pendingMed && (
+        <DoseRatingModal
+          medicationName={pendingMed.drugName}
+          onSubmit={handleRatingSubmit}
+          onSkip={handleRatingSkip}
+        />
+      )}
     </div>
   );
 };

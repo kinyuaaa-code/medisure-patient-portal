@@ -11,6 +11,7 @@ import {
 } from "firebase/firestore";
 import { useAuth } from "../../context/AuthContext";
 import ProviderNotes from "../../components/ui/ProviderNotes";
+import MedicationRatings from "../../components/ui/MedicationRatings";
 
 interface PatientDetailProps {
   patientId: string;
@@ -374,6 +375,15 @@ const PatientDetail = ({ patientId, onBack }: PatientDetailProps) => {
           </div>
         )}
       </div>
+      {/* Medication Effectiveness Ratings */}
+      <div className="bg-white rounded-2xl p-5 shadow-sm mb-4">
+        <h2 className="font-bold text-gray-900 mb-4">
+          Medication Effectiveness Ratings
+        </h2>
+      <MedicationRatings patientId={patientId} />
+    </div>
+      {/* Medication Ratings */}
+      <MedicationRatings patientId={patientId} />
 
       {/* Recent Dose Logs */}
       <div className="bg-white rounded-2xl p-5 shadow-sm mb-4">
