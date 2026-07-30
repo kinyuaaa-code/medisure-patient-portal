@@ -19,6 +19,11 @@ import {
   Cell,
 } from "recharts";
 import DoseRatingModal from "../components/ui/DoseRatingModal";
+import {
+  requestNotificationPermission,
+  scheduleAllReminders,
+} from "../services/notifications";
+import { scheduleEmailReminders } from "../services/emailReminders";
 
 interface Medication {
   id: string;
@@ -51,6 +56,8 @@ const Home = () => {
   const [adherenceHistory, setAdherenceHistory] = useState<any[]>([]);
   const [showRatingModal, setShowRatingModal] = useState(false);
   const [pendingMed, setPendingMed] = useState<Medication | null>(null);
+  const [upcomingDoses, setUpcomingDoses] = useState<any[]>([]);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
 
   const moods = [
     { label: "Great", emoji: "😊" },
@@ -76,6 +83,19 @@ const Home = () => {
     loadMedications();
     loadAdherenceHistory();
   }, [user]);
+
+  useEffect(() => {
+    if (medications.length > 0) {
+      loadUpcomingDoses();
+      if (Notification.permission === "granted") {
+        scheduleAllReminders(medications);
+        setNotificationsEnabled(true);
+      }
+      if (user?.email) {
+        scheduleEmailReminders(medications, user.name, user.email);
+      }
+    }
+  }, [medications]);
 
   const loadMedications = async () => {
     if (!user) return;
@@ -150,6 +170,45 @@ const Home = () => {
       setAdherenceHistory(history);
     } catch (err) {
       console.error("Error loading adherence history:", err);
+    }
+  };
+
+  const loadUpcomingDoses = () => {
+    const now = new Date();
+    const upcoming = medications
+      .filter((med) => !med.logged)
+      .map((med) => {
+        const times = med.times || [];
+        const dueTimes = times.map((time: string) => {
+          const [hourStr, minuteStr] = time
+            .replace(/AM|PM/gi, "")
+            .trim()
+            .split(":");
+          let hour = parseInt(hourStr);
+          const minute = parseInt(minuteStr || "0");
+          if (time.toUpperCase().includes("PM") && hour !== 12) hour += 12;
+          if (time.toUpperCase().includes("AM") && hour === 12) hour = 0;
+          const due = new Date();
+          due.setHours(hour, minute, 0, 0);
+          return { time, due, med };
+        });
+        return dueTimes;
+      })
+      .flat()
+      .filter(({ due }) => {
+        const diff = due.getTime() - now.getTime();
+        return diff > -30 * 60 * 1000 && diff < 2 * 60 * 60 * 1000;
+      })
+      .sort((a, b) => a.due.getTime() - b.due.getTime());
+
+    setUpcomingDoses(upcoming);
+  };
+
+  const enableNotifications = async () => {
+    const token = await requestNotificationPermission();
+    if (token) {
+      setNotificationsEnabled(true);
+      scheduleAllReminders(medications);
     }
   };
 
@@ -260,7 +319,79 @@ const Home = () => {
             />
           </div>
         </div>
+
+        {/* Notification Permission Banner */}
+        {!notificationsEnabled && Notification.permission !== "granted" && (
+          <div className="mt-3 flex items-center justify-between bg-blue-50 rounded-xl px-3 py-2">
+            <p className="text-xs text-blue-600">
+              🔔 Enable reminders to get notified when doses are due
+            </p>
+            <button
+              onClick={enableNotifications}
+              className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-lg font-semibold ml-2 flex-shrink-0"
+            >
+              Enable
+            </button>
+          </div>
+        )}
       </div>
+
+      {/* Upcoming Dose Reminders */}
+      {upcomingDoses.length > 0 && (
+        <div className="mx-4 mt-4 space-y-2">
+          {upcomingDoses.map(({ time, due, med }, i) => {
+            const diff = due.getTime() - new Date().getTime();
+            const minutesUntil = Math.round(diff / (1000 * 60));
+            const isOverdue = diff < 0;
+            const isDueSoon = diff > 0 && diff < 30 * 60 * 1000;
+
+            return (
+              <div
+                key={i}
+                className={`rounded-2xl px-4 py-3 flex items-center gap-3 ${
+                  isOverdue
+                    ? "bg-red-50 border border-red-200"
+                    : isDueSoon
+                    ? "bg-yellow-50 border border-yellow-200"
+                    : "bg-blue-50 border border-blue-200"
+                }`}
+              >
+                <span className="text-xl">
+                  {isOverdue ? "⚠️" : isDueSoon ? "⏰" : "🔔"}
+                </span>
+                <div className="flex-1">
+                  <p
+                    className={`text-sm font-semibold ${
+                      isOverdue
+                        ? "text-red-700"
+                        : isDueSoon
+                        ? "text-yellow-700"
+                        : "text-blue-700"
+                    }`}
+                  >
+                    {isOverdue
+                      ? `${med.drugName} was due ${Math.abs(minutesUntil)} min ago`
+                      : isDueSoon
+                      ? `${med.drugName} due in ${minutesUntil} min`
+                      : `${med.drugName} due at ${time}`}
+                  </p>
+                  <p
+                    className={`text-xs mt-0.5 ${
+                      isOverdue
+                        ? "text-red-500"
+                        : isDueSoon
+                        ? "text-yellow-600"
+                        : "text-blue-500"
+                    }`}
+                  >
+                    {med.dosage} · {med.category}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Today's Medications */}
       <div className="mx-4 mt-5">
@@ -376,7 +507,8 @@ const Home = () => {
                 {Math.round(
                   adherenceHistory.reduce((sum, d) => sum + d.score, 0) /
                     adherenceHistory.length
-                )}%
+                )}
+                %
               </p>
               <p className="text-xs text-gray-400">weekly avg</p>
             </div>
